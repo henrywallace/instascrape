@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """
-LLM ETL over Brave Search -> Reddit post/comment
+LLM ETL over Brave Search -> post/comment (platform-agnostic)
 
-Steps:
-- Use Brave to find a Reddit post about clinical trial experiences
-- Fetch the Reddit JSON for the post
-- Use OpenAI to extract structured fields from the post (or first comment)
-- Validate via Pydantic and print a brief quality review
+Modes:
+- Single: Search once (default) and extract from a Reddit post or comment
+- Iterative: Define domain D and sample queries over N iterations; fetch results from any site and extract via LLM
 
 Env vars (loaded via .env):
 - BRAVE_API_KEY
-- OPENAI_API_KEY
-- OPENAI_MODEL (optional, default: gpt-4o-mini)
+- ANTHROPIC_API_KEY (preferred) or OPENAI_API_KEY (fallback)
+- ANTHROPIC_MODEL / OPENAI_MODEL (optional)
 
 Usage examples:
-  python analyze_posts.py
-  python analyze_posts.py --query "clinical trial experience reddit" --max-items 1
-  python analyze_posts.py --use-comment
-  python analyze_posts.py --model gpt-4o
+  python analyze_posts.py --provider anthropic --model claude-3-5-sonnet-latest --raw-output
+  python analyze_posts.py --use-comment --provider anthropic --raw-output
+  python analyze_posts.py --domain "patients' opinions on clinical trials" --niters 1 --results-per-iter 3 --provider anthropic --raw-output
 """
 
 import argparse
@@ -82,6 +79,17 @@ class ThreadMetadata(BaseModel):
     link_flair_text: Optional[str] = None
 
 
+class Engagement(BaseModel):
+    upvotes: Optional[int] = None
+    downvotes: Optional[int] = None
+    score: Optional[int] = None
+    upvote_ratio: Optional[float] = None
+    comments_count: Optional[int] = None
+    likes: Optional[int] = None
+    shares: Optional[int] = None
+    views: Optional[int] = None
+
+
 class ETLResult(BaseModel):
     source_url: str
     source_domain: Optional[str] = None
@@ -110,6 +118,7 @@ class ETLResult(BaseModel):
     participant_profile: Optional[ParticipantProfile] = None
     study_info: Optional[StudyInfo] = None
     thread_metadata: Optional[ThreadMetadata] = None
+    engagement: Optional[Engagement] = None
 
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     uncertainties: List[str] = Field(default_factory=list)
