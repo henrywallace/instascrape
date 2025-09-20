@@ -133,6 +133,28 @@ def load_env() -> None:
     load_dotenv()
 
 
+def _clean_json_text(text: str) -> str:
+    """Strip common code fences and extract JSON object substring if needed."""
+    if not text:
+        return "{}"
+    stripped = text.strip()
+    # Remove triple backtick fences if present
+    if stripped.startswith("```"):
+        # remove first line (``` or ```json)
+        parts = stripped.split("\n", 1)
+        stripped = parts[1] if len(parts) > 1 else "{}"
+        if stripped.endswith("```"):
+            stripped = stripped[: -3]
+        stripped = stripped.strip()
+    # If still not valid, try to find outermost braces
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            stripped = stripped[start : end + 1]
+    return stripped
+
+
 def get_openai_client() -> OpenAI:
     if OpenAI is None:
         raise RuntimeError(
@@ -459,6 +481,7 @@ def call_openai_extract(
         temperature=temperature,
     )
     text = resp.choices[0].message.content or "{}"
+    text = _clean_json_text(text)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -554,6 +577,7 @@ def call_anthropic_extract(
         text = "\n".join(parts) if parts else "{}"
     except Exception:
         text = "{}"
+    text = _clean_json_text(text)
 
     try:
         return json.loads(text)
@@ -635,6 +659,12 @@ def main() -> None:
         help="How many search results to attempt to extract per iteration",
     )
     parser.add_argument(
+        "--max-per-domain",
+        type=int,
+        default=1,
+        help="Max results per domain per run to improve diversity",
+    )
+    parser.add_argument(
         "--delay",
         type=float,
         default=1.2,
@@ -713,12 +743,14 @@ def main() -> None:
     if args.niters and args.domain:
         domain = args.domain
         prior_queries: List[str] = []
+        seen_urls: set[str] = set()
+        domain_counts: Dict[str, int] = {}
         for i in range(args.niters):
             # Sample a new query via LLM given the domain and history
             prompt = {
                 "domain": domain,
                 "prior": prior_queries,
-                "instruction": "Generate ONE concise search query string to discover diverse, firsthand patient opinions on clinical trials. Avoid repeating prior queries; prefer new phrasing, different communities (forums, disease-specific boards), non-Reddit sites, and recent years in text."
+                "instruction": "Generate ONE concise web search query to discover firsthand patient opinions/experiences about clinical trials. Avoid institutions (PubMed, NIH, pharma) and prefer human voices (forums, community boards, personal blogs). Do not repeat prior queries. Encourage diversity across sites; include phrasing like 'my experience', 'what was it like', 'phase 1', 'overnight stay', 'side effects', or disease-specific terms."
             }
             q_payload = {
                 "source_url": "about:blank",
@@ -756,6 +788,11 @@ def main() -> None:
                 url = r.get("url")
                 if not url:
                     continue
+                if url in seen_urls:
+                    continue
+                domain_name = r.get("domain") or r.get("meta_url", {}).get("hostname") or ""
+                if domain_counts.get(domain_name, 0) >= args.max_per_domain:
+                    continue
                 # Prefer Reddit JSON if available; otherwise generic fetch
                 payload = None
                 thread_meta = None
@@ -786,6 +823,8 @@ def main() -> None:
                 except ValidationError:
                     all_outputs.append(extracted)
                 time.sleep(args.delay)
+                seen_urls.add(url)
+                domain_counts[domain_name] = domain_counts.get(domain_name, 0) + 1
             time.sleep(args.delay)
     else:
         # Single mode: prefer Reddit if present to show concrete demo
